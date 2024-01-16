@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<title>Test</title>
+		<style>
+			body { margin: 0; }
+		</style>
+	</head>
+	<body>
+        <script id="vertexShader" type="x-shader/x-vertex">
+
+			attribute vec2 reference;
+
+            varying vec2 v_texcoord;
+			
+			uniform sampler2D texturePosition;
+
+			void main() {
+
+				vec3 newPosition = texture2D( texturePosition, reference ).xyz;
+                
+				gl_Position = projectionMatrix *  viewMatrix  * vec4( position + newPosition, 1.0 );
+				v_texcoord = uv;
+			}
+
+		</script>
+        <script id="fragmentShader" type="x-shader/x-fragment">
+
+            varying vec2 v_texcoord;
+
+			void main()	{
+                vec2 centreOffset = (v_texcoord - 0.5) * 2.0;
+                float sqrDstFromCenter = dot(centreOffset, centreOffset);
+                float delta = fwidth(sqrt(sqrDstFromCenter));
+                float circleAlpha = 1. - smoothstep(1. - delta, 1. + delta, sqrDstFromCenter);
+                gl_FragColor = vec4(0.0, 0.0, 1.0,  circleAlpha);
+			}
+
+		</script>
+		<script id="fragmentPosition" type="x-shader/x-fragment">
+
+			precision highp float;
+
+			uniform float deltaTime;
+			uniform float boundaries;
+			uniform float gravity;
+			uniform float smoothingRadius;
+			uniform float textureWidth;
+
+			const float PI = 3.1415926535897932384626433832795;
+			const float mass = 1.;
+	
+			float SmoothingKernel( float dst, float radius ) {
+				float volume = PI * pow( radius, 8.0 ) / 4.0;
+				float value = max( 0.0, radius * radius - dst * dst );
+				return value * value * value / volume;
+			}
+
+			float CalculateDensity( vec2 pos ) {
+				float density = 0.;
+				
+				for (float i = 0.; i < textureWidth; i ++) {
+					for (float j = 0.; j < textureWidth; j ++) {
+
+						vec2 index = vec2( i, j ) / textureWidth;				
+						vec2 otherPos = texture2D( texturePosition, index ).xy;
+				
+						float dst = distance( pos, otherPos );
+						float influence = SmoothingKernel( dst, smoothingRadius );
+						density += influence * mass;
+					}
+				}
+				return density;
+			}
+
+            void main()	{
+				vec2 uv = gl_FragCoord.xy / resolution.xy;
+				vec3 position = texture2D( texturePosition, uv ).xyz;
+				vec3 velocity = texture2D( textureVelocity, uv ).xyz;
+				vec3 acceleration = vec3(0.0, gravity, 0.0);
+
+				velocity += acceleration * deltaTime;
+				position += velocity * deltaTime;
+
+				if ( abs( position.x ) > boundaries) {
+					position.x = boundaries * sign( position.x );
+				}
+
+				if ( abs( position.y ) > boundaries) {
+					position.y = boundaries * sign( position.y );
+				}
+
+				float density = CalculateDensity( position.xy );
+                gl_FragColor = vec4( position, density );
+			}
+
+		</script>
+		<script id="fragmentVelocity" type="x-shader/x-fragment">
+
+			precision highp float;
+
+			uniform float deltaTime;
+			uniform float gravity;
+			uniform float boundaries;
+			uniform float dumpingFactor;
+
+            void main()	{
+				vec2 uv = gl_FragCoord.xy / resolution.xy;
+				vec3 position = texture2D( texturePosition, uv ).xyz;
+				vec3 velocity = texture2D( textureVelocity, uv ).xyz;
+				vec3 acceleration = vec3(0.0, gravity, 0.0);
+
+				velocity += acceleration * deltaTime;
+				position += velocity * deltaTime;
+
+				if ( abs( position.x ) > boundaries) {
+					velocity.x *= -1.0 * dumpingFactor;
+				}
+
+				if ( abs( position.y ) > boundaries) {
+					velocity.y *= -1.0 * dumpingFactor;
+				}
+
+                gl_FragColor = vec4(velocity, 1.0);
+			}
+
+		</script>
+		<script id="fragmentBackground" type="x-shader/x-fragment">
+
+			precision highp float;
+			uniform sampler2D texturePosition;
+			uniform float textureWidth;
+			uniform float smoothingRadius;
+			uniform vec2 halfResolution;
+
+			const float PI = 3.1415926535897932384626433832795;
+			
+			const float mass = 1.;
+
+			float map(float value, float min1, float max1, float min2, float max2) {
+				return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
+			}
+
+			float SmoothingKernel( float dst, float radius ) {
+				float volume = PI * pow( radius, 8.0 ) / 4.0;
+				float value = max( 0.0, radius * radius - dst * dst );
+				return value * value * value / volume;
+			}
+
+			float SmoothingKernelDerivative( float dst, float radius ) {
+				if ( dst >= radius ) return 0.;
+				float f = radius * radius - dst * dst;
+				float scale = - 24. / (PI * pow( radius, 8. ));
+				return scale * dst * f * f; 
+			}
+
+			float CalculateDensity( vec2 pos , float textureWidth, sampler2D texturePosition ) {
+				float density = 0.;
+				
+				for (float i = 0.; i < textureWidth; i ++) {
+					for (float j = 0.; j < textureWidth; j ++) {
+
+						vec2 index = vec2( i, j ) / textureWidth;				
+						vec2 otherPos = texture2D( texturePosition, index ).xy;
+				
+						float dst = distance( pos, otherPos );
+						float influence = SmoothingKernel( dst, smoothingRadius );
+						density += influence * mass;
+					}
+				}
+				return density;
+			}
+
+			vec2 CalculatePropertyGradient( vec2 pos ) {
+				vec2 propertyGradient;
+
+				for (float i = 0.; i < textureWidth; i ++) {
+					for (float j = 0.; j < textureWidth; j ++) {
+
+						vec2 index = vec2( i, j ) / textureWidth;				
+						vec2 otherPos = texture2D( texturePosition, index ).xy;
+						float density = texture2D( texturePosition, index ).w;
+				
+						float dst = distance( pos, otherPos );
+						vec2 dir = ( otherPos - pos ) / dst;
+						float slope = SmoothingKernelDerivative( dst, smoothingRadius );
+						propertyGradient += - dir * slope * mass / density;
+					}
+				}
+				return propertyGradient;
+			}
+
+            void main()	{
+				vec2 currentPos = gl_FragCoord.xy - halfResolution;
+				
+				float density = CalculateDensity( currentPos , textureWidth, texturePosition );
+				vec2 test = CalculatePropertyGradient( currentPos );
+				gl_FragColor = vec4(0.0, 0.0, 0.0, density * 1000.);
+			}
+
+		</script>
+		<script type="module" src="/main.js"></script>
+	</body>
+</html>
+
